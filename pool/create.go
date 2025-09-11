@@ -363,7 +363,7 @@ func Create(args CreatePoolArgs) error {
 		},
 		Properties: &armcompute.VirtualMachineScaleSetProperties{
 			UpgradePolicy: &armcompute.UpgradePolicy{
-				Mode: to.Ptr(armcompute.UpgradeModeManual),
+				Mode: to.Ptr(armcompute.UpgradeModeAutomatic),
 			},
 			VirtualMachineProfile: &armcompute.VirtualMachineScaleSetVMProfile{
 				OSProfile: &armcompute.VirtualMachineScaleSetOSProfile{
@@ -381,6 +381,9 @@ func Create(args CreatePoolArgs) error {
 							},
 						},
 					},
+				},
+				SecurityProfile: &armcompute.SecurityProfile{ // Enable Trusted Launch security type
+					SecurityType: to.Ptr(armcompute.SecurityTypes("TrustedLaunch")),
 				},
 				StorageProfile: storageProfile,
 				NetworkProfile: &armcompute.VirtualMachineScaleSetNetworkProfile{

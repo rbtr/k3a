@@ -200,7 +200,9 @@ func createStorageAccount(ctx context.Context, subscriptionID, resourceGroup, lo
 		},
 		Kind: to.Ptr(armstorage.KindStorageV2),
 		Properties: &armstorage.AccountPropertiesCreateParameters{
-			AccessTier: to.Ptr(armstorage.AccessTierHot),
+			AccessTier:            to.Ptr(armstorage.AccessTierHot),
+			AllowBlobPublicAccess: to.Ptr(false),
+			AllowSharedKeyAccess:  to.Ptr(false),
 		},
 	}, nil)
 	if err != nil {
