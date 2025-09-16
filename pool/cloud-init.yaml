@@ -219,7 +219,7 @@ runcmd:
       echo "Waiting for API 6443 ($i)"; sleep 5
     done
     # Install agent
-    curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION="{{ .K8sVersion }}+k3s1" sh -s - agent --token=$CLUSTER_TOKEN --server https://kubernetes.cluster.internal:6443 --kubelet-arg=max-pods=300 --pause-image=mcr.microsoft.com/oss/v2/kubernetes/pause:3.10 --flannel-backend=none --disable-network-policy
+    curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION="{{ .K8sVersion }}+k3s1" sh -s - agent --token=$CLUSTER_TOKEN --server https://kubernetes.cluster.internal:6443 --kubelet-arg=max-pods=300 --pause-image=mcr.microsoft.com/oss/v2/kubernetes/pause:3.10
     
     # Wait for k3s to be ready, then label this node as worker
     while ! kubectl --kubeconfig=/var/lib/rancher/k3s/agent/kubelet.kubeconfig get nodes $(hostname) >/dev/null 2>&1; do

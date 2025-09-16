@@ -1,8 +1,10 @@
+#!/bin/bash
+set -xe
 echo $K3A_CLUSTER
 echo $K3A_SUBSCRIPTION
 go build -o k3a ./cmd/k3a && echo "Build successful"
 # Create cluster infrastructure with integrated PostgreSQL Flexible Server
-./k3a cluster create --cluster $K3A_CLUSTER --subscription $K3A_SUBSCRIPTION --location canadacentral --postgres-sku Standard_D64s_v3
+./k3a cluster create --cluster $K3A_CLUSTER --subscription $K3A_SUBSCRIPTION --region canadacentral --postgres-sku Standard_D64s_v3
 ./k3a pool create --cluster $K3A_CLUSTER --name k3a-controlplane --instance-count 1 --subscription $K3A_SUBSCRIPTION --role control-plane --sku Standard_D96s_v5 
 ./k3a pool create --cluster $K3A_CLUSTER --name k3a-worker-0 --role worker --sku Standard_D16s_v3 --instance-count 1
 ./k3a nsg rule create --source CorpNetPublic --name AllowCorpNetPublic --priority 150  --subscription $K3A_SUBSCRIPTION --cluster $K3A_CLUSTER
