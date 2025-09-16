@@ -170,7 +170,7 @@ runcmd:
     {{- end }}
 
     # Pre-seed DNS A record with this control-plane IP if not present yet
-    INTERNAL_IP=$(hostname -I | awk '{print $1}')
+    INTERNAL_IP=$(ip addr show eth0 | grep 'inet ' | awk '{print $2}' | cut -d/ -f1)
     if ! az network private-dns record-set a show --name kubernetes --zone-name cluster.internal --resource-group "{{ .ResourceGroup }}" >/dev/null 2>&1; then
       az network private-dns record-set a create --name kubernetes --zone-name cluster.internal --resource-group "{{ .ResourceGroup }}" --ttl 60 || true
     fi
