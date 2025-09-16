@@ -116,17 +116,65 @@ runcmd:
   - iptables -A INPUT -p tcp --dport 2379 -j ACCEPT
   - iptables -A INPUT -p tcp --dport 2380 -j ACCEPT
   - az login --identity --client-id "{{ .MSIClientID }}"
+  - |
+    # Determine / provision cluster token
+    if [ "{{ .Role }}" = "control-plane" ]; then
+      if [ -n "{{ .ClusterToken }}" ]; then
+        # Cluster token provided via CLI; use directly
+        CLUSTER_TOKEN='{{ .ClusterToken }}'
+        echo "Using provided cluster token from CLI"
+      else
+        # Try to fetch existing token from Key Vault
+        CLUSTER_TOKEN=$(az keyvault secret show --vault-name "{{.KeyVaultName}}" --name "k3s-cluster-token" --query value -o tsv 2>/dev/null || true)
+        if [ -z "$CLUSTER_TOKEN" ]; then
+          # Generate a new token (40 chars alnum)
+          CLUSTER_TOKEN=$(head -c 32 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 40)
+          az keyvault secret set --vault-name "{{.KeyVaultName}}" --name "k3s-cluster-token" --value "$CLUSTER_TOKEN" >/dev/null
+          echo "Generated new cluster token and stored in Key Vault"
+        else
+          echo "Reusing existing cluster token from Key Vault"
+        fi
+      fi
+      echo "CLUSTER_TOKEN_READY" # marker
+    else
+      if [ -n "{{ .ClusterToken }}" ]; then
+        CLUSTER_TOKEN='{{ .ClusterToken }}'
+        echo "Worker using provided cluster token from CLI"
+      else
+        # Wait for token to appear in Key Vault (control-plane may still be creating it)
+        for i in $(seq 1 60); do
+          CLUSTER_TOKEN=$(az keyvault secret show --vault-name "{{.KeyVaultName}}" --name "k3s-cluster-token" --query value -o tsv 2>/dev/null || true)
+            if [ -n "$CLUSTER_TOKEN" ]; then
+              echo "Retrieved cluster token from Key Vault"
+              break
+            fi
+            echo "Waiting for cluster token... ($i)"
+            sleep 5
+        done
+        if [ -z "$CLUSTER_TOKEN" ]; then
+          echo "ERROR: Cluster token not found after waiting" >&2
+        fi
+      fi
+    fi
   {{- if .UsePostgres }}
   - export POSTGRES_PASSWORD=$(az keyvault secret show --vault-name "{{.KeyVaultName}}" --name "postgres-admin-password" --query value -o tsv)
   - export POSTGRES_PASSWORD_ESCAPED=$(python3 -c "import urllib.parse,os; print(urllib.parse.quote(os.environ['POSTGRES_PASSWORD']))")
   {{- end }}
   - |
     {{- if eq .Role "control-plane" }}
+    # Install k3s server using the synthesized cluster token
     {{- if .UsePostgres }}
-    curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION="{{ .K8sVersion }}+k3s1" sh -s - server --token=SECRET --tls-san {{ .ExternalIP }} --embedded-registry --cluster-cidr=16.0.0.0/5 --service-cidr=172.20.0.0/16 --kube-controller-manager-arg=node-cidr-mask-size=22 --kubelet-arg=max-pods=300 --datastore-endpoint="postgres://azureuser:${POSTGRES_PASSWORD_ESCAPED}@{{.PostgresName}}.{{.PostgresSuffix}}:5432/postgres" --etcd-disable-snapshots --disable=traefik,local-path,core-dns,metrics-server --flannel-backend=none --disable-network-policy --enable-pprof --kube-apiserver-arg=etcd-compaction-interval=0 --kube-scheduler-arg=config=/etc/rancher/k3s/scheduler-config.yaml --pause-image=mcr.microsoft.com/oss/v2/kubernetes/pause:3.10 --kube-apiserver-arg=max-requests-inflight=400 --kube-apiserver-arg=max-mutating-requests-inflight=100 --kube-controller-manager-arg=node-monitor-period=1m 
+    curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION="{{ .K8sVersion }}+k3s1" sh -s - server --token=$CLUSTER_TOKEN --tls-san {{ .ExternalIP }} --embedded-registry --cluster-cidr=16.0.0.0/5 --service-cidr=172.20.0.0/16 --kube-controller-manager-arg=node-cidr-mask-size=22 --kubelet-arg=max-pods=300 --datastore-endpoint="postgres://azureuser:${POSTGRES_PASSWORD_ESCAPED}@{{.PostgresName}}.{{.PostgresSuffix}}:5432/postgres" --etcd-disable-snapshots --disable=traefik,local-path,core-dns,metrics-server --flannel-backend=none --disable-network-policy --enable-pprof --kube-apiserver-arg=etcd-compaction-interval=0 --kube-scheduler-arg=config=/etc/rancher/k3s/scheduler-config.yaml --pause-image=mcr.microsoft.com/oss/v2/kubernetes/pause:3.10 --kube-apiserver-arg=max-requests-inflight=400 --kube-apiserver-arg=max-mutating-requests-inflight=100 --kube-controller-manager-arg=node-monitor-period=1m 
     {{- else }}
-    curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION="{{ .K8sVersion }}+k3s1" sh -s - server --token=SECRET --tls-san {{ .ExternalIP }} --embedded-registry --cluster-cidr=16.0.0.0/5 --service-cidr=172.20.0.0/16 --datastore-endpoint="{{ .EtcdEndpoint }}"  --kubelet-arg=max-pods=300 --etcd-disable-snapshots --disable=traefik,local-storage,coredns,metrics-server  --enable-pprof  --kube-scheduler-arg=config=/etc/rancher/k3s/scheduler-config.yaml  --pause-image=mcr.microsoft.com/oss/v2/kubernetes/pause:3.10  --kube-apiserver-arg=max-requests-inflight=400  --kube-apiserver-arg=max-mutating-requests-inflight=100 --kube-apiserver-arg=etcd-compaction-interval=0 --kube-controller-manager-arg=kube-api-qps=300 --kube-controller-manager-arg=kube-api-burst=400 --kube-controller-manager-arg=node-monitor-period=1m --kube-controller-manager-arg=node-monitor-grace-period=10m --kube-controller-manager-arg=concurrent-job-syncs=100 
+    curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION="{{ .K8sVersion }}+k3s1" sh -s - server --token=$CLUSTER_TOKEN --tls-san {{ .ExternalIP }} --embedded-registry --cluster-cidr=16.0.0.0/5 --service-cidr=172.20.0.0/16 --datastore-endpoint="{{ .EtcdEndpoint }}"  --kubelet-arg=max-pods=300 --etcd-disable-snapshots --disable=traefik,local-storage,coredns,metrics-server  --enable-pprof  --kube-scheduler-arg=config=/etc/rancher/k3s/scheduler-config.yaml  --pause-image=mcr.microsoft.com/oss/v2/kubernetes/pause:3.10  --kube-apiserver-arg=max-requests-inflight=400  --kube-apiserver-arg=max-mutating-requests-inflight=100 --kube-apiserver-arg=etcd-compaction-interval=0 --kube-controller-manager-arg=kube-api-qps=300 --kube-controller-manager-arg=kube-api-burst=400 --kube-controller-manager-arg=node-monitor-period=1m --kube-controller-manager-arg=node-monitor-grace-period=10m --kube-controller-manager-arg=concurrent-job-syncs=100 
     {{- end }}
+
+    # Pre-seed DNS A record with this control-plane IP if not present yet
+    INTERNAL_IP=$(hostname -I | awk '{print $1}')
+    if ! az network private-dns record-set a show --name kubernetes --zone-name cluster.internal --resource-group "{{ .ResourceGroup }}" >/dev/null 2>&1; then
+      az network private-dns record-set a create --name kubernetes --zone-name cluster.internal --resource-group "{{ .ResourceGroup }}" --ttl 60 || true
+    fi
+    az network private-dns record-set a add-record --record-set-name kubernetes --zone-name cluster.internal --resource-group "{{ .ResourceGroup }}" --ipv4-address "$INTERNAL_IP" || true
 
     systemctl daemon-reload
     systemctl enable --now k3s-update-peer.service
@@ -146,7 +194,32 @@ runcmd:
     done
 
     {{- else }}
-    curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION="{{ .K8sVersion }}+k3s1" sh -s - agent --token=SECRET --server https://kubernetes.cluster.internal:6443 --kubelet-arg=max-pods=300 --pause-image=mcr.microsoft.com/oss/v2/kubernetes/pause:3.10 --flannel-backend=none --disable-network-policy
+    # Worker readiness waits
+    # 1. Ensure we have or retrieve cluster token
+    if [ -n "{{ .ClusterToken }}" ]; then
+      CLUSTER_TOKEN='{{ .ClusterToken }}'
+    else
+      for i in $(seq 1 60); do
+        CLUSTER_TOKEN=$(az keyvault secret show --vault-name "{{.KeyVaultName}}" --name "k3s-cluster-token" --query value -o tsv 2>/dev/null || true)
+        if [ -n "$CLUSTER_TOKEN" ]; then echo "Cluster token acquired"; break; fi
+        sleep 5
+      done
+    fi
+    if [ -z "$CLUSTER_TOKEN" ]; then echo "ERROR: No cluster token available" >&2; fi
+    # 2. DNS resolution loop
+    for i in $(seq 1 60); do
+      HOST_IPS=$(getent hosts kubernetes.cluster.internal | awk '{print $1}')
+      if [ -n "$HOST_IPS" ]; then echo "DNS resolved: $HOST_IPS"; break; fi
+      echo "Waiting for DNS kubernetes.cluster.internal ($i)"; sleep 5
+    done
+    # 3. API port readiness
+    TARGET_IP=$(getent hosts kubernetes.cluster.internal | head -n1 | awk '{print $1}')
+    for i in $(seq 1 60); do
+      (echo > /dev/tcp/$TARGET_IP/6443) >/dev/null 2>&1 && echo "API port open" && break
+      echo "Waiting for API 6443 ($i)"; sleep 5
+    done
+    # Install agent
+    curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION="{{ .K8sVersion }}+k3s1" sh -s - agent --token=$CLUSTER_TOKEN --server https://kubernetes.cluster.internal:6443 --kubelet-arg=max-pods=300 --pause-image=mcr.microsoft.com/oss/v2/kubernetes/pause:3.10 --flannel-backend=none --disable-network-policy
     
     # Wait for k3s to be ready, then label this node as worker
     while ! kubectl --kubeconfig=/var/lib/rancher/k3s/agent/kubelet.kubeconfig get nodes $(hostname) >/dev/null 2>&1; do

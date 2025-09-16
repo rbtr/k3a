@@ -60,6 +60,7 @@ var createPoolCmd = &cobra.Command{
 		usePostgres, _ := cmd.Flags().GetBool("use-postgres")
 		postgresName, _ := cmd.Flags().GetString("postgres-name")
 		postgresSuffix, _ := cmd.Flags().GetString("postgres-suffix")
+		clusterToken, _ := cmd.Flags().GetString("cluster-token")
 
 		// If an etcd endpoint is provided and the user did not explicitly set --use-postgres,
 		// automatically switch to etcd (disable Postgres). If they explicitly set --use-postgres=true,
@@ -124,6 +125,7 @@ var createPoolCmd = &cobra.Command{
 			UsePostgres:    usePostgres,
 			PostgresName:   postgresName,
 			PostgresSuffix: postgresSuffix,
+			ClusterToken:   clusterToken,
 		})
 	},
 }
@@ -213,6 +215,7 @@ func init() {
 	createPoolCmd.Flags().Bool("use-postgres", true, "Use PostgreSQL as the datastore (default). Set --use-postgres=false to use external etcd (then --etcd-endpoint required)")
 	createPoolCmd.Flags().String("postgres-name", "", "PostgreSQL server name (required if use-postgres is true)")
 	createPoolCmd.Flags().String("postgres-suffix", "postgres.database.azure.com", "PostgreSQL server suffix (default: postgres.database.azure.com)")
+	createPoolCmd.Flags().String("cluster-token", "", "Optional pre-shared k3s cluster token (if set, bypasses Key Vault generation/retrieval)")
 
 	_ = createPoolCmd.MarkFlagRequired("name")
 	_ = createPoolCmd.MarkFlagRequired("role")

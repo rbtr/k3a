@@ -35,6 +35,7 @@ type CreatePoolArgs struct {
 	UsePostgres    bool     // Use PostgreSQL instead of etcd
 	PostgresName   string   // PostgreSQL server name
 	PostgresSuffix string   // PostgreSQL server suffix (e.g., postgres.database.azure.com)
+	ClusterToken   string   // Optional cluster token (bypasses Key Vault if provided)
 }
 
 //go:embed cloud-init.yaml
@@ -274,6 +275,7 @@ func Create(args CreatePoolArgs) error {
 		"UsePostgres":        args.UsePostgres, // Pass as boolean, not string
 		"PostgresName":       args.PostgresName,
 		"PostgresSuffix":     args.PostgresSuffix,
+		"ClusterToken":       args.ClusterToken,
 	}
 
 	// Debug output to verify template data
