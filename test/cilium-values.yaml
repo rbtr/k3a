@@ -1,0 +1,20 @@
+operator:
+  image:
+    repository: "acnpublic.azurecr.io/jshr-cilium/operator"
+    tag: "1.19dev-jshr-disablenetpol.0"
+    pullPolicy: "Always"
+    suffix: ""
+k8sNetworkPolicy:
+  enabled: false
+disableEndpointCRD: true
+identityAllocationMode: crd
+extraConfig:
+  enable-policy: "never"
+  enable-cilium-network-policy: "false"
+  enable-cilium-clusterwide-network-policy: "false"
+image:
+    repository: "acnpublic.azurecr.io/jshr-cilium/cilium"
+    tag: "1.19dev-jshr-disablenetpol.0"
+    pullPolicy: "Always"
+l7proxy:
+  enabled: false
