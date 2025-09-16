@@ -9,7 +9,7 @@ go build -o k3a ./cmd/k3a && echo "Build successful"
 ./k3a pool create --cluster $K3A_CLUSTER --name k3a-worker-0 --role worker --sku Standard_D16s_v3 --instance-count 1
 ./k3a nsg rule create --source CorpNetPublic --name AllowCorpNetPublic --priority 150  --subscription $K3A_SUBSCRIPTION --cluster $K3A_CLUSTER
 ./k3a kubeconfig --cluster $K3A_CLUSTER
-cilium install --set=ipam.operator.clusterPoolIPv4PodCIDRList="10.42.0.0/16" --values test/cilium-values.yaml
+cilium install --set=ipam.operator.clusterPoolIPv4PodCIDRList="10.42.0.0/16"  --chart-directory=$HOME/src/github.com/cilium/cilium/install/kubernetes/cilium --helm-values=$HOME/src/github.com/cilium/cilium/contrib/testing/kind-common.yaml --version=
 # kubectl get nodes -o name | grep "k3s-agent-" | xargs -I {} kubectl label {} node-role.kubernetes.io/worker=worker --overwrite
 
 
