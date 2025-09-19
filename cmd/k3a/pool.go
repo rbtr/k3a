@@ -46,7 +46,7 @@ var createPoolCmd = &cobra.Command{
 		if cluster == "" {
 			return fmt.Errorf("--cluster flag is required (or set K3A_CLUSTER)")
 		}
-		location, _ := cmd.Flags().GetString("region")
+		region, _ := cmd.Flags().GetString("region")
 		role, _ := cmd.Flags().GetString("role")
 		name, _ := cmd.Flags().GetString("name")
 		sshKeyPath, _ := cmd.Flags().GetString("ssh-key")
@@ -54,6 +54,8 @@ var createPoolCmd = &cobra.Command{
 		k8sVersion, _ := cmd.Flags().GetString("k8s-version")
 		sku, _ := cmd.Flags().GetString("sku")
 		osDiskSize, _ := cmd.Flags().GetInt("os-disk-size")
+		etcdAddr, _ := cmd.Flags().GetString("etcd-addr")
+		hyperVGeneration, _ := cmd.Flags().GetString("hyperv-generation")
 
 		// Accept one or more MSI resource IDs
 		msiIDs, _ := cmd.Flags().GetStringArray("msi")
@@ -63,17 +65,19 @@ var createPoolCmd = &cobra.Command{
 		defer stopSpinner()
 
 		return pool.Create(pool.CreatePoolArgs{
-			SubscriptionID: subscriptionID,
-			Cluster:        cluster,
-			Location:       location,
-			Role:           role,
-			Name:           name,
-			SSHKeyPath:     sshKeyPath,
-			InstanceCount:  instanceCount,
-			K8sVersion:     k8sVersion,
-			SKU:            sku,
-			OSDiskSizeGB:   osDiskSize,
-			MSIIDs:         msiIDs,
+			SubscriptionID:   subscriptionID,
+			Cluster:          cluster,
+			Region:           region,
+			EtcdAddr:         etcdAddr,
+			Role:             role,
+			Name:             name,
+			SSHKeyPath:       sshKeyPath,
+			InstanceCount:    instanceCount,
+			K8sVersion:       k8sVersion,
+			SKU:              sku,
+			OSDiskSizeGB:     osDiskSize,
+			MSIIDs:           msiIDs,
+			HyperVGeneration: hyperVGeneration,
 		})
 	},
 }
@@ -160,6 +164,10 @@ var kubeadmInstallCmd = &cobra.Command{
 			return fmt.Errorf("--role flag is required")
 		}
 		k8sVersion, _ := cmd.Flags().GetString("k8s-version")
+		sshKeyPath, _ := cmd.Flags().GetString("ssh-key")
+
+		region, _ := cmd.Flags().GetString("region")
+		etcdAddr, _ := cmd.Flags().GetString("etcd-addr")
 
 		// Add spinner for kubeadm installation
 		stopSpinner := spinner.Spinner("Installing kubeadm on VMSS pool...")
@@ -171,6 +179,9 @@ var kubeadmInstallCmd = &cobra.Command{
 			Name:           name,
 			Role:           role,
 			K8sVersion:     k8sVersion,
+			SSHKeyPath:     sshKeyPath,
+			Region:         region,
+			EtcdAddr:       etcdAddr,
 		})
 	},
 }
@@ -188,10 +199,12 @@ func init() {
 	createPoolCmd.Flags().String("name", "", "Name of the node pool (required)")
 	createPoolCmd.Flags().String("role", "control-plane", "Role of the node pool (control-plane or worker)")
 	createPoolCmd.Flags().String("region", "canadacentral", "Azure region for the pool")
+	createPoolCmd.Flags().String("etcd-addr", "", "Etcd address for the first control-plane node (required for first control-plane pool)")
 	createPoolCmd.Flags().Int("instance-count", 1, "Number of VMSS instances")
 	createPoolCmd.Flags().String("ssh-key", os.ExpandEnv("$HOME/.ssh/id_rsa.pub"), "Path to the SSH public key file")
 	createPoolCmd.Flags().String("k8s-version", "v1.33.1", "Kubernetes version (e.g. v1.33.1)")
 	createPoolCmd.Flags().String("sku", "Standard_D2s_v3", "VM SKU type (default: Standard_D2s_v3)")
+	createPoolCmd.Flags().String("hyperv-generation", "gen2", "Hypervisor generation: gen1 or gen2 (default: gen2)")
 	createPoolCmd.Flags().Int("os-disk-size", 30, "OS disk size in GB (default: 30)")
 	createPoolCmd.Flags().StringArray("msi", nil, "Additional user-assigned MSI resource IDs to add to the VMSS (can be specified multiple times)")
 
@@ -215,6 +228,9 @@ func init() {
 	kubeadmInstallCmd.Flags().String("name", "", "Name of the node pool (required)")
 	kubeadmInstallCmd.Flags().String("role", "", "Role of the node pool (control-plane or worker) (required)")
 	kubeadmInstallCmd.Flags().String("k8s-version", "v1.33.1", "Kubernetes version (e.g. v1.33.1)")
+	kubeadmInstallCmd.Flags().String("ssh-key", "", "SSH public key path (default: ~/.ssh/id_rsa.pub)")
+	kubeadmInstallCmd.Flags().String("etcd-addr", "", "Etcd address for the first control-plane node (required for first control-plane pool)")
+	kubeadmInstallCmd.Flags().String("region", "canadacentral", "Azure region for the pool")
 	_ = kubeadmInstallCmd.MarkFlagRequired("name")
 	_ = kubeadmInstallCmd.MarkFlagRequired("role")
 

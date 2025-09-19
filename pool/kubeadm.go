@@ -513,8 +513,14 @@ func (k *KubeadmInstaller) getSecretFromKeyVault(ctx context.Context, secretName
 	return *resp.Value, nil
 }
 
+type InstallOptions struct {
+	Region     string
+	EtcdAddr   string
+	K8sVersion string
+}
+
 // InstallAsFirstMaster installs kubeadm and bootstraps the first master node
-func (k *KubeadmInstaller) InstallAsFirstMaster(ctx context.Context) error {
+func (k *KubeadmInstaller) InstallAsFirstMaster(ctx context.Context, opts *InstallOptions) error {
 	fmt.Println("=== BOOTSTRAPPING FIRST MASTER NODE ===")
 
 	// Check if node is already part of a cluster
@@ -575,15 +581,7 @@ func (k *KubeadmInstaller) InstallAsFirstMaster(ctx context.Context) error {
 	internalIP := strings.TrimSpace(output)
 	fmt.Printf("Using internal IP: %s\n", internalIP)
 
-	// Construct the DNS name with correct Azure format
-	// Extract region from cluster name (format: k3s-{region}-{suffix})
-	clusterParts := strings.Split(k.cluster, "-")
-	var region string
-	if len(clusterParts) >= 3 && strings.HasPrefix(k.cluster, "k3s-") {
-		region = clusterParts[1] // Extract region from k3s-{region}-{suffix}
-	} else {
-		region = "canadacentral" // fallback
-	}
+	region := opts.Region
 	dnsName := fmt.Sprintf("%s.%s.cloudapp.azure.com", k.cluster, region)
 	// Use internal IP for control plane endpoint to avoid external load balancer dependency
 	controlPlaneEndpoint := fmt.Sprintf("%s:6443", internalIP)
@@ -602,7 +600,7 @@ func (k *KubeadmInstaller) InstallAsFirstMaster(ctx context.Context) error {
 
 	kubeadmConfig := fmt.Sprintf(`apiVersion: kubeadm.k8s.io/v1beta4
 kind: ClusterConfiguration
-kubernetesVersion: v1.33.1
+kubernetesVersion: "%s"
 controlPlaneEndpoint: "%s"
 networking:
   podSubnet: "16.0.0.0/5"
@@ -639,7 +637,7 @@ controllerManager:
 etcd:
   external:
     endpoints:
-    - "http://4.206.93.140:2379"
+    - "http://%s:2379"
 ---
 apiVersion: kubeadm.k8s.io/v1beta4
 kind: InitConfiguration
@@ -660,7 +658,7 @@ clientConnection:
 percentageOfNodesToScore: 1
 profiles:
   - schedulerName: default-scheduler
-`, controlPlaneEndpoint, internalIP, dnsName, internalIP)
+`, opts.K8sVersion, controlPlaneEndpoint, internalIP, dnsName, opts.EtcdAddr, internalIP)
 
 	// Write kubeadm config to temporary file
 	configCmd := fmt.Sprintf("cat > /tmp/kubeadm-config.yaml << 'EOF'\n%s\nEOF", kubeadmConfig)
@@ -678,7 +676,7 @@ profiles:
 	}
 
 	// Clean up config file
-	k.executeCommand("rm -f /tmp/kubeadm-config.yaml")
+	// k.executeCommand("rm -f /tmp/kubeadm-config.yaml")
 
 	// Configure kubectl for azureuser
 	fmt.Println("Configuring kubectl for azureuser...")
@@ -710,274 +708,274 @@ profiles:
 	fmt.Println("Kubeconfig stored in Key Vault with load balancer endpoint")
 
 	// Create custom Flannel manifest on the remote machine
-	fmt.Println("Creating custom Flannel configuration...")
-	flannelManifest := `---
-apiVersion: v1
-kind: Namespace
-metadata:
-  labels:
-    k8s-app: flannel
-    pod-security.kubernetes.io/enforce: privileged
-  name: kube-flannel
----
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  labels:
-    k8s-app: flannel
-  name: flannel
-  namespace: kube-flannel
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  labels:
-    k8s-app: flannel
-  name: flannel
-rules:
-- apiGroups:
-  - ""
-  resources:
-  - pods
-  verbs:
-  - get
-- apiGroups:
-  - ""
-  resources:
-  - nodes
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - ""
-  resources:
-  - nodes/status
-  verbs:
-  - patch
-- apiGroups:
-  - networking.k8s.io
-  resources:
-  - clustercidrs
-  verbs:
-  - list
-  - watch
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  labels:
-    k8s-app: flannel
-  name: flannel
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: flannel
-subjects:
-- kind: ServiceAccount
-  name: flannel
-  namespace: kube-flannel
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: kube-flannel-cfg
-  namespace: kube-flannel
-  labels:
-    tier: node
-    k8s-app: flannel
-    app: flannel
-data:
-  cni-conf.json: |
-    {
-      "name": "cbr0",
-      "cniVersion": "1.0.0",
-      "plugins": [
-        {
-          "type": "flannel",
-          "delegate": {
-            "hairpinMode": true,
-            "isDefaultGateway": true
-          }
-        },
-        {
-          "type": "portmap",
-          "capabilities": {
-            "portMappings": true
-          }
-        }
-      ]
-    }
-  net-conf.json: |
-    {
-      "Network": "16.0.0.0/5",
-      "EnableNFTables": false,
-      "Backend": {
-        "Type": "vxlan"
-      }
-    }
----
-apiVersion: apps/v1
-kind: DaemonSet
-metadata:
-  name: kube-flannel-ds
-  namespace: kube-flannel
-  labels:
-    tier: node
-    app: flannel
-    k8s-app: flannel
-spec:
-  selector:
-    matchLabels:
-      app: flannel
-      k8s-app: flannel
-  template:
-    metadata:
-      labels:
-        tier: node
-        app: flannel
-        k8s-app: flannel
-    spec:
-      affinity:
-        nodeAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            nodeSelectorTerms:
-            - matchExpressions:
-              - key: kubernetes.io/os
-                operator: In
-                values:
-                - linux
-              - key: kubemark
-                operator: NotIn
-                values:
-                - "true"
-      hostNetwork: true
-      priorityClassName: system-node-critical
-      tolerations:
-      - operator: Exists
-        effect: NoSchedule
-      serviceAccountName: flannel
-      initContainers:
-      - name: install-cni-plugin
-        image: ghcr.io/flannel-io/flannel-cni-plugin:v1.7.1-flannel1
-        command:
-        - cp
-        args:
-        - -f
-        - /flannel
-        - /opt/cni/bin/flannel
-        volumeMounts:
-        - name: cni-plugin
-          mountPath: /opt/cni/bin
-        securityContext:
-          privileged: false
-          capabilities:
-            add: ["SYS_ADMIN"]
-      - name: install-cni
-        image: ghcr.io/flannel-io/flannel:v0.27.3
-        command:
-        - cp
-        args:
-        - -f
-        - /etc/kube-flannel/cni-conf.json
-        - /etc/cni/net.d/10-flannel.conflist
-        volumeMounts:
-        - name: cni
-          mountPath: /etc/cni/net.d
-        - name: flannel-cfg
-          mountPath: /etc/kube-flannel/
-        securityContext:
-          privileged: false
-          capabilities:
-            add: ["SYS_ADMIN"]
-      containers:
-      - name: kube-flannel
-        image: ghcr.io/flannel-io/flannel:v0.27.3
-        command:
-        - /opt/bin/flanneld
-        args:
-        - --ip-masq
-        - --kube-subnet-mgr
-        resources:
-          requests:
-            cpu: "100m"
-            memory: "50Mi"
-        securityContext:
-          privileged: false
-          capabilities:
-            add: ["NET_ADMIN", "NET_RAW"]
-        env:
-        - name: POD_NAME
-          valueFrom:
-            fieldRef:
-              fieldPath: metadata.name
-        - name: POD_NAMESPACE
-          valueFrom:
-            fieldRef:
-              fieldPath: metadata.namespace
-        - name: EVENT_QUEUE_DEPTH
-          value: "5000"
-        volumeMounts:
-        - name: run
-          mountPath: /run/flannel
-        - name: flannel-cfg
-          mountPath: /etc/kube-flannel/
-        - name: xtables-lock
-          mountPath: /run/xtables.lock
-      volumes:
-      - name: run
-        hostPath:
-          path: /run/flannel
-      - name: cni-plugin
-        hostPath:
-          path: /opt/cni/bin
-      - name: cni
-        hostPath:
-          path: /etc/cni/net.d
-      - name: flannel-cfg
-        configMap:
-          name: kube-flannel-cfg
-      - name: xtables-lock
-        hostPath:
-          path: /run/xtables.lock
-          type: FileOrCreate`
+	// fmt.Println("Creating custom Flannel configuration...")
+	// 	flannelManifest := `---
+	// apiVersion: v1
+	// kind: Namespace
+	// metadata:
+	//   labels:
+	//     k8s-app: flannel
+	//     pod-security.kubernetes.io/enforce: privileged
+	//   name: kube-flannel
+	// ---
+	// apiVersion: v1
+	// kind: ServiceAccount
+	// metadata:
+	//   labels:
+	//     k8s-app: flannel
+	//   name: flannel
+	//   namespace: kube-flannel
+	// ---
+	// apiVersion: rbac.authorization.k8s.io/v1
+	// kind: ClusterRole
+	// metadata:
+	//   labels:
+	//     k8s-app: flannel
+	//   name: flannel
+	// rules:
+	// - apiGroups:
+	//   - ""
+	//   resources:
+	//   - pods
+	//   verbs:
+	//   - get
+	// - apiGroups:
+	//   - ""
+	//   resources:
+	//   - nodes
+	//   verbs:
+	//   - get
+	//   - list
+	//   - watch
+	// - apiGroups:
+	//   - ""
+	//   resources:
+	//   - nodes/status
+	//   verbs:
+	//   - patch
+	// - apiGroups:
+	//   - networking.k8s.io
+	//   resources:
+	//   - clustercidrs
+	//   verbs:
+	//   - list
+	//   - watch
+	// ---
+	// apiVersion: rbac.authorization.k8s.io/v1
+	// kind: ClusterRoleBinding
+	// metadata:
+	//   labels:
+	//     k8s-app: flannel
+	//   name: flannel
+	// roleRef:
+	//   apiGroup: rbac.authorization.k8s.io
+	//   kind: ClusterRole
+	//   name: flannel
+	// subjects:
+	// - kind: ServiceAccount
+	//   name: flannel
+	//   namespace: kube-flannel
+	// ---
+	// apiVersion: v1
+	// kind: ConfigMap
+	// metadata:
+	//   name: kube-flannel-cfg
+	//   namespace: kube-flannel
+	//   labels:
+	//     tier: node
+	//     k8s-app: flannel
+	//     app: flannel
+	// data:
+	//   cni-conf.json: |
+	//     {
+	//       "name": "cbr0",
+	//       "cniVersion": "1.0.0",
+	//       "plugins": [
+	//         {
+	//           "type": "flannel",
+	//           "delegate": {
+	//             "hairpinMode": true,
+	//             "isDefaultGateway": true
+	//           }
+	//         },
+	//         {
+	//           "type": "portmap",
+	//           "capabilities": {
+	//             "portMappings": true
+	//           }
+	//         }
+	//       ]
+	//     }
+	//   net-conf.json: |
+	//     {
+	//       "Network": "16.0.0.0/5",
+	//       "EnableNFTables": false,
+	//       "Backend": {
+	//         "Type": "vxlan"
+	//       }
+	//     }
+	// ---
+	// apiVersion: apps/v1
+	// kind: DaemonSet
+	// metadata:
+	//   name: kube-flannel-ds
+	//   namespace: kube-flannel
+	//   labels:
+	//     tier: node
+	//     app: flannel
+	//     k8s-app: flannel
+	// spec:
+	//   selector:
+	//     matchLabels:
+	//       app: flannel
+	//       k8s-app: flannel
+	//   template:
+	//     metadata:
+	//       labels:
+	//         tier: node
+	//         app: flannel
+	//         k8s-app: flannel
+	//     spec:
+	//       affinity:
+	//         nodeAffinity:
+	//           requiredDuringSchedulingIgnoredDuringExecution:
+	//             nodeSelectorTerms:
+	//             - matchExpressions:
+	//               - key: kubernetes.io/os
+	//                 operator: In
+	//                 values:
+	//                 - linux
+	//               - key: kubemark
+	//                 operator: NotIn
+	//                 values:
+	//                 - "true"
+	//       hostNetwork: true
+	//       priorityClassName: system-node-critical
+	//       tolerations:
+	//       - operator: Exists
+	//         effect: NoSchedule
+	//       serviceAccountName: flannel
+	//       initContainers:
+	//       - name: install-cni-plugin
+	//         image: ghcr.io/flannel-io/flannel-cni-plugin:v1.7.1-flannel1
+	//         command:
+	//         - cp
+	//         args:
+	//         - -f
+	//         - /flannel
+	//         - /opt/cni/bin/flannel
+	//         volumeMounts:
+	//         - name: cni-plugin
+	//           mountPath: /opt/cni/bin
+	//         securityContext:
+	//           privileged: false
+	//           capabilities:
+	//             add: ["SYS_ADMIN"]
+	//       - name: install-cni
+	//         image: ghcr.io/flannel-io/flannel:v0.27.3
+	//         command:
+	//         - cp
+	//         args:
+	//         - -f
+	//         - /etc/kube-flannel/cni-conf.json
+	//         - /etc/cni/net.d/10-flannel.conflist
+	//         volumeMounts:
+	//         - name: cni
+	//           mountPath: /etc/cni/net.d
+	//         - name: flannel-cfg
+	//           mountPath: /etc/kube-flannel/
+	//         securityContext:
+	//           privileged: false
+	//           capabilities:
+	//             add: ["SYS_ADMIN"]
+	//       containers:
+	//       - name: kube-flannel
+	//         image: ghcr.io/flannel-io/flannel:v0.27.3
+	//         command:
+	//         - /opt/bin/flanneld
+	//         args:
+	//         - --ip-masq
+	//         - --kube-subnet-mgr
+	//         resources:
+	//           requests:
+	//             cpu: "100m"
+	//             memory: "50Mi"
+	//         securityContext:
+	//           privileged: false
+	//           capabilities:
+	//             add: ["NET_ADMIN", "NET_RAW"]
+	//         env:
+	//         - name: POD_NAME
+	//           valueFrom:
+	//             fieldRef:
+	//               fieldPath: metadata.name
+	//         - name: POD_NAMESPACE
+	//           valueFrom:
+	//             fieldRef:
+	//               fieldPath: metadata.namespace
+	//         - name: EVENT_QUEUE_DEPTH
+	//           value: "5000"
+	//         volumeMounts:
+	//         - name: run
+	//           mountPath: /run/flannel
+	//         - name: flannel-cfg
+	//           mountPath: /etc/kube-flannel/
+	//         - name: xtables-lock
+	//           mountPath: /run/xtables.lock
+	//       volumes:
+	//       - name: run
+	//         hostPath:
+	//           path: /run/flannel
+	//       - name: cni-plugin
+	//         hostPath:
+	//           path: /opt/cni/bin
+	//       - name: cni
+	//         hostPath:
+	//           path: /etc/cni/net.d
+	//       - name: flannel-cfg
+	//         configMap:
+	//           name: kube-flannel-cfg
+	//       - name: xtables-lock
+	//         hostPath:
+	//           path: /run/xtables.lock
+	//           type: FileOrCreate`
 
-	_, err = k.executeCommand(fmt.Sprintf("cat > /tmp/kube-flannel-custom.yml << 'EOF'\n%s\nEOF", flannelManifest))
-	if err != nil {
-		return fmt.Errorf("failed to create custom Flannel manifest: %w", err)
-	}
+	// 	// _, err = k.executeCommand(fmt.Sprintf("cat > /tmp/kube-flannel-custom.yml << 'EOF'\n%s\nEOF", flannelManifest))
+	// if err != nil {
+	// 	return fmt.Errorf("failed to create custom Flannel manifest: %w", err)
+	// }
 
-	// Install Flannel CNI plugin with custom configuration
-	fmt.Println("Installing Flannel CNI plugin...")
-	_, err = k.executeCommand("kubectl apply -f /tmp/kube-flannel-custom.yml")
-	if err != nil {
-		return fmt.Errorf("failed to install Flannel CNI: %w", err)
-	}
+	// // Install Flannel CNI plugin with custom configuration
+	// fmt.Println("Installing Flannel CNI plugin...")
+	// _, err = k.executeCommand("kubectl apply -f /tmp/kube-flannel-custom.yml")
+	// if err != nil {
+	// 	return fmt.Errorf("failed to install Flannel CNI: %w", err)
+	// }
 
-	// Install local path provisioner for persistent storage
-	fmt.Println("Installing local path provisioner...")
-	_, err = k.executeCommand("kubectl apply -f https://raw.githubusercontent.com/rancher/local-path-provisioner/v0.0.28/deploy/local-path-storage.yaml")
-	if err != nil {
-		return fmt.Errorf("failed to install local path provisioner: %w", err)
-	}
+	// // Install local path provisioner for persistent storage
+	// fmt.Println("Installing local path provisioner...")
+	// _, err = k.executeCommand("kubectl apply -f https://raw.githubusercontent.com/rancher/local-path-provisioner/v0.0.28/deploy/local-path-storage.yaml")
+	// if err != nil {
+	// 	return fmt.Errorf("failed to install local path provisioner: %w", err)
+	// }
 
-	// Configure DaemonSets to avoid scheduling on hollow nodes
-	fmt.Println("Configuring DaemonSets to exclude hollow nodes...")
+	// // Configure DaemonSets to avoid scheduling on hollow nodes
+	// fmt.Println("Configuring DaemonSets to exclude hollow nodes...")
 
-	// Update kube-proxy DaemonSet to exclude hollow nodes
-	kubeProxyPatch := `{"spec":{"template":{"spec":{"affinity":{"nodeAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":{"nodeSelectorTerms":[{"matchExpressions":[{"key":"kubernetes.io/os","operator":"In","values":["linux"]},{"key":"kubemark","operator":"NotIn","values":["true"]}]}]}}}}}}}`
-	_, err = k.executeCommand(fmt.Sprintf("kubectl patch ds kube-proxy -n kube-system --type='strategic' -p='%s'", kubeProxyPatch))
-	if err != nil {
-		fmt.Printf("Warning: failed to patch kube-proxy DaemonSet (may not exist yet): %v\n", err)
-	}
+	// // Update kube-proxy DaemonSet to exclude hollow nodes
+	// kubeProxyPatch := `{"spec":{"template":{"spec":{"affinity":{"nodeAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":{"nodeSelectorTerms":[{"matchExpressions":[{"key":"kubernetes.io/os","operator":"In","values":["linux"]},{"key":"kubemark","operator":"NotIn","values":["true"]}]}]}}}}}}}`
+	// _, err = k.executeCommand(fmt.Sprintf("kubectl patch ds kube-proxy -n kube-system --type='strategic' -p='%s'", kubeProxyPatch))
+	// if err != nil {
+	// 	fmt.Printf("Warning: failed to patch kube-proxy DaemonSet (may not exist yet): %v\n", err)
+	// }
 
-	// Update flannel DaemonSet to exclude hollow nodes (wait a bit for flannel to be ready)
-	time.Sleep(30 * time.Second)
-	flannelPatch := `{"spec":{"template":{"spec":{"affinity":{"nodeAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":{"nodeSelectorTerms":[{"matchExpressions":[{"key":"kubernetes.io/os","operator":"In","values":["linux"]},{"key":"kubemark","operator":"NotIn","values":["true"]}]}]}}}}}}}`
-	_, err = k.executeCommand(fmt.Sprintf("kubectl patch ds kube-flannel-ds -n kube-flannel --type='strategic' -p='%s'", flannelPatch))
-	if err != nil {
-		fmt.Printf("Warning: failed to patch flannel DaemonSet (may not exist yet): %v\n", err)
-	}
+	// // Update flannel DaemonSet to exclude hollow nodes (wait a bit for flannel to be ready)
+	// time.Sleep(30 * time.Second)
+	// flannelPatch := `{"spec":{"template":{"spec":{"affinity":{"nodeAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":{"nodeSelectorTerms":[{"matchExpressions":[{"key":"kubernetes.io/os","operator":"In","values":["linux"]},{"key":"kubemark","operator":"NotIn","values":["true"]}]}]}}}}}}}`
+	// _, err = k.executeCommand(fmt.Sprintf("kubectl patch ds kube-flannel-ds -n kube-flannel --type='strategic' -p='%s'", flannelPatch))
+	// if err != nil {
+	// 	fmt.Printf("Warning: failed to patch flannel DaemonSet (may not exist yet): %v\n", err)
+	// }
 
 	// Wait for system to stabilize
 	fmt.Println("Waiting for cluster to stabilize...")
@@ -1169,6 +1167,9 @@ func CreateSSHClientViaNAT(lbPublicIP string, natPort int, username, privateKeyP
 		privateKeyPath = filepath.Join(os.Getenv("HOME"), ".ssh", "id_rsa")
 	}
 
+	// If privateKeyPath ends with .pub, remove .pub to get the private key path
+	privateKeyPath = strings.TrimSuffix(privateKeyPath, ".pub")
+
 	privateKeyBytes, err := os.ReadFile(privateKeyPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read private key: %w", err)
@@ -1277,7 +1278,7 @@ func (k *KubeadmInstaller) patchKubeadmConfigForMultiMaster(controlPlaneEndpoint
 			newLines = append(newLines, "etcd:")
 			newLines = append(newLines, "  external:")
 			newLines = append(newLines, "    endpoints:")
-			newLines = append(newLines, "    - http://4.206.93.140:2379")
+			newLines = append(newLines, "    - http://10.1.0.4:2379")
 			added = true
 		}
 	}
@@ -1289,7 +1290,7 @@ func (k *KubeadmInstaller) patchKubeadmConfigForMultiMaster(controlPlaneEndpoint
 			"etcd:",
 			"  external:",
 			"    endpoints:",
-			"    - http://4.206.93.140:2379",
+			"    - http://10.1.0.4:2379",
 		}
 		newLines = append(newLines, lines...)
 	}

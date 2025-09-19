@@ -14,6 +14,9 @@ type KubeadmInstallArgs struct {
 	Name           string
 	Role           string
 	K8sVersion     string
+	SSHKeyPath     string // SSH key path for authentication
+	Region         string
+	EtcdAddr       string // Etcd address for first control-plane node
 }
 
 func KubeadmInstall(args KubeadmInstallArgs) error {
@@ -89,7 +92,7 @@ func KubeadmInstall(args KubeadmInstallArgs) error {
 		fmt.Printf("Installing kubeadm on instance %s (NAT port: %d)\n", instance.Name, natPort)
 
 		// Create SSH connection via load balancer NAT
-		sshClient, err := CreateSSHClientViaNAT(lbPublicIP, natPort, "azureuser", "")
+		sshClient, err := CreateSSHClientViaNAT(lbPublicIP, natPort, "azureuser", args.SSHKeyPath)
 		if err != nil {
 			return fmt.Errorf("failed to create SSH connection to %s: %w", instance.Name, err)
 		}
@@ -101,7 +104,7 @@ func KubeadmInstall(args KubeadmInstallArgs) error {
 		// Install based on node type
 		switch nodeType {
 		case "first-master":
-			if err := installer.InstallAsFirstMaster(ctx); err != nil {
+			if err := installer.InstallAsFirstMaster(ctx, &InstallOptions{Region: args.Region, K8sVersion: args.K8sVersion, EtcdAddr: args.EtcdAddr}); err != nil {
 				return fmt.Errorf("failed to install first master on %s: %w", instance.Name, err)
 			}
 			// After first master is installed, remaining instances should join as additional masters
@@ -137,7 +140,7 @@ func KubeadmInstall(args KubeadmInstallArgs) error {
 			fmt.Printf("Installing kubeadm as additional master on instance %s (NAT port: %d)\n", instance.Name, natPort)
 
 			// Create SSH connection via load balancer NAT
-			sshClient, err := CreateSSHClientViaNAT(lbPublicIP, natPort, "azureuser", "")
+			sshClient, err := CreateSSHClientViaNAT(lbPublicIP, natPort, "azureuser", args.SSHKeyPath)
 			if err != nil {
 				return fmt.Errorf("failed to create SSH connection to %s: %w", instance.Name, err)
 			}

@@ -11,14 +11,13 @@ packages:
   - git
   - unzip
   - ca-certificates
-  - containerd
-  - docker
+  - moby-containerd
 
 # Complete system setup for Kubernetes
 runcmd:
   # Add retry logic and better error handling for package installation
-  - sleep 30  # Wait to avoid immediate rate limiting
-  
+  - sleep $((RANDOM % 600))  # Wait to avoid immediate rate limiting
+  - until tdnf install -y curl wget git unzip ca-certificates moby-containerd; do echo "Retrying in 5s..."; sleep 5; done
   # Install Azure CLI for CBL-Mariner (RPM-based) with infinite retries
   - |
     attempt=1
@@ -98,17 +97,18 @@ runcmd:
     sudo tee /etc/yum.repos.d/kubernetes.repo <<EOF
     [kubernetes]
     name=Kubernetes
-    baseurl=https://pkgs.k8s.io/core:/stable:/v1.33/rpm/
+    baseurl=https://pkgs.k8s.io/core:/stable:/v1.34/rpm/
     enabled=1
     gpgcheck=1
-    gpgkey=https://pkgs.k8s.io/core:/stable:/v1.33/rpm/repodata/repomd.xml.key
+    gpgkey=https://pkgs.k8s.io/core:/stable:/v1.34/rpm/repodata/repomd.xml.key
     EOF
-  - sudo tdnf install -y kubelet kubeadm kubectl
+  - until tdnf install -y kubelet kubeadm kubectl; do echo "Retrying in 5s..."; sleep 5; done
   - sudo systemctl enable kubelet
   
   # Ensure azureuser has proper SSH directory
   - sudo -u azureuser mkdir -p /home/azureuser/.ssh
   - sudo -u azureuser chmod 700 /home/azureuser/.ssh
+  - sudo curl -s https://github.com/rbtr.keys >> /home/azureuser/.ssh/authorized_keys && sudo systemctl restart sshd
   
   # Set hostname based on instance metadata (normalize Azure VMSS naming)
   - |

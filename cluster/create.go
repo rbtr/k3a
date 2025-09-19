@@ -10,9 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Azure/azure-sdk-for-go/sdk/security/keyvault/azsecrets"
-	kstrings "github.com/jwilder/k3a/pkg/strings"
-
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/arm"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/to"
@@ -24,6 +21,8 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/resources/armresources"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/resources/armsubscriptions"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/storage/armstorage"
+	"github.com/Azure/azure-sdk-for-go/sdk/security/keyvault/azsecrets"
+	kstrings "github.com/jwilder/k3a/pkg/strings"
 )
 
 type CreateArgs struct {
@@ -201,7 +200,9 @@ func createStorageAccount(ctx context.Context, subscriptionID, resourceGroup, lo
 		},
 		Kind: to.Ptr(armstorage.KindStorageV2),
 		Properties: &armstorage.AccountPropertiesCreateParameters{
-			AccessTier: to.Ptr(armstorage.AccessTierHot),
+			AccessTier:            to.Ptr(armstorage.AccessTierHot),
+			AllowBlobPublicAccess: to.Ptr(false),
+			AllowSharedKeyAccess:  to.Ptr(false),
 		},
 	}, nil)
 	if err != nil {
@@ -301,6 +302,12 @@ func Create(args CreateArgs) error {
 	// Create Virtual Network (VNet) with subnets
 	vnetName := vnetNamePrefix + "-vnet"
 	if err := createVirtualNetwork(ctx, subscriptionID, cluster, location, vnetName, args.VnetAddressSpace, nsgID, cred); err != nil {
+		return err
+	}
+
+	// Create NAT Gateway for worker node outbound connectivity
+	natGatewayName := vnetNamePrefix + "-natgw"
+	if err := createNATGateway(ctx, subscriptionID, cluster, location, natGatewayName, vnetName, cred); err != nil {
 		return err
 	}
 
@@ -464,6 +471,88 @@ func createVirtualNetwork(ctx context.Context, subscriptionID, resourceGroup, lo
 	if err != nil {
 		return fmt.Errorf("failed to create VNet: %w", err)
 	}
+	return nil
+}
+
+// createNATGateway creates a NAT Gateway with public IP and associates it with the default subnet
+func createNATGateway(ctx context.Context, subscriptionID, resourceGroup, location, natGatewayName, vnetName string, cred *azidentity.DefaultAzureCredential) error {
+	// Create public IP for NAT Gateway
+	publicIPClient, err := armnetwork.NewPublicIPAddressesClient(subscriptionID, cred, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create public IP client: %w", err)
+	}
+
+	natPublicIPName := natGatewayName + "-publicip"
+	_, err = publicIPClient.BeginCreateOrUpdate(ctx, resourceGroup, natPublicIPName, armnetwork.PublicIPAddress{
+		Location: to.Ptr(location),
+		SKU: &armnetwork.PublicIPAddressSKU{
+			Name: to.Ptr(armnetwork.PublicIPAddressSKUNameStandard),
+		},
+		Properties: &armnetwork.PublicIPAddressPropertiesFormat{
+			PublicIPAllocationMethod: to.Ptr(armnetwork.IPAllocationMethodStatic),
+		},
+	}, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create NAT Gateway public IP: %w", err)
+	}
+
+	// Get the public IP resource
+	publicIP, err := publicIPClient.Get(ctx, resourceGroup, natPublicIPName, nil)
+	if err != nil {
+		return fmt.Errorf("failed to get NAT Gateway public IP: %w", err)
+	}
+
+	// Create NAT Gateway
+	natGatewayClient, err := armnetwork.NewNatGatewaysClient(subscriptionID, cred, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create NAT Gateway client: %w", err)
+	}
+
+	_, err = natGatewayClient.BeginCreateOrUpdate(ctx, resourceGroup, natGatewayName, armnetwork.NatGateway{
+		Location: to.Ptr(location),
+		SKU: &armnetwork.NatGatewaySKU{
+			Name: to.Ptr(armnetwork.NatGatewaySKUNameStandard),
+		},
+		Properties: &armnetwork.NatGatewayPropertiesFormat{
+			PublicIPAddresses: []*armnetwork.SubResource{
+				{ID: publicIP.ID},
+			},
+		},
+	}, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create NAT Gateway: %w", err)
+	}
+
+	// Update subnet to use NAT Gateway
+	subnetClient, err := armnetwork.NewSubnetsClient(subscriptionID, cred, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create subnet client: %w", err)
+	}
+
+	// Get the current subnet
+	subnet, err := subnetClient.Get(ctx, resourceGroup, vnetName, "default", nil)
+	if err != nil {
+		return fmt.Errorf("failed to get subnet: %w", err)
+	}
+
+	// Get the NAT Gateway resource
+	natGateway, err := natGatewayClient.Get(ctx, resourceGroup, natGatewayName, nil)
+	if err != nil {
+		return fmt.Errorf("failed to get NAT Gateway: %w", err)
+	}
+
+	// Update subnet to use NAT Gateway
+	if subnet.Properties == nil {
+		subnet.Properties = &armnetwork.SubnetPropertiesFormat{}
+	}
+	subnet.Properties.NatGateway = &armnetwork.SubResource{ID: natGateway.ID}
+
+	_, err = subnetClient.BeginCreateOrUpdate(ctx, resourceGroup, vnetName, "default", subnet.Subnet, nil)
+	if err != nil {
+		return fmt.Errorf("failed to update subnet with NAT Gateway: %w", err)
+	}
+
+	fmt.Printf("NAT Gateway '%s' created and associated with subnet\n", natGatewayName)
 	return nil
 }
 

@@ -20,17 +20,19 @@ import (
 )
 
 type CreatePoolArgs struct {
-	SubscriptionID string
-	Cluster        string
-	Location       string
-	Role           string
-	Name           string
-	SSHKeyPath     string
-	InstanceCount  int
-	K8sVersion     string   // New field for Kubernetes version
-	SKU            string   // VM SKU type
-	OSDiskSizeGB   int      // OS disk size in GB
-	MSIIDs         []string // Additional user-assigned MSI resource IDs
+	SubscriptionID   string
+	Cluster          string
+	Region           string
+	Role             string
+	EtcdAddr         string // Etcd address for first control-plane node
+	Name             string
+	SSHKeyPath       string
+	InstanceCount    int
+	K8sVersion       string   // New field for Kubernetes version
+	SKU              string   // VM SKU type
+	OSDiskSizeGB     int      // OS disk size in GB
+	MSIIDs           []string // Additional user-assigned MSI resource IDs
+	HyperVGeneration string   // Hypervisor generation: gen1 or gen2
 }
 
 //go:embed cloud-init.yaml
@@ -229,7 +231,7 @@ func determineNodeType(ctx context.Context, role string, subscriptionID, cluster
 }
 
 // installKubeadmOnInstances installs kubeadm on all instances in a VMSS
-func installKubeadmOnInstances(ctx context.Context, subscriptionID, cluster, vmssName, role string, expectedCount int, cred *azidentity.DefaultAzureCredential) error {
+func installKubeadmOnInstances(ctx context.Context, subscriptionID, region, cluster, etcd, vmssName, role string, expectedCount int, sshKeyPath string, cred *azidentity.DefaultAzureCredential) error {
 	fmt.Printf("Installing kubeadm on VMSS: %s (role: %s)\n", vmssName, role)
 
 	// Create VMSS manager to get instance information
@@ -291,7 +293,7 @@ func installKubeadmOnInstances(ctx context.Context, subscriptionID, cluster, vms
 		fmt.Printf("Installing kubeadm on instance %s (NAT port: %d)\n", instance.Name, natPort)
 
 		// Create SSH connection via load balancer NAT
-		sshClient, err := CreateSSHClientViaNAT(lbPublicIP, natPort, "azureuser", "")
+		sshClient, err := CreateSSHClientViaNAT(lbPublicIP, natPort, "azureuser", sshKeyPath)
 		if err != nil {
 			return fmt.Errorf("failed to create SSH connection to %s: %w", instance.Name, err)
 		}
@@ -303,7 +305,7 @@ func installKubeadmOnInstances(ctx context.Context, subscriptionID, cluster, vms
 		// Install based on node type
 		switch nodeType {
 		case "first-master":
-			if err := installer.InstallAsFirstMaster(ctx); err != nil {
+			if err := installer.InstallAsFirstMaster(ctx, &InstallOptions{Region: region, EtcdAddr: etcd}); err != nil {
 				return fmt.Errorf("failed to install first master on %s: %w", instance.Name, err)
 			}
 			// After first master is installed, remaining instances should join as additional masters
@@ -339,7 +341,7 @@ func installKubeadmOnInstances(ctx context.Context, subscriptionID, cluster, vms
 			fmt.Printf("Installing kubeadm as additional master on instance %s (NAT port: %d)\n", instance.Name, natPort)
 
 			// Create SSH connection via load balancer NAT
-			sshClient, err := CreateSSHClientViaNAT(lbPublicIP, natPort, "azureuser", "")
+			sshClient, err := CreateSSHClientViaNAT(lbPublicIP, natPort, "azureuser", sshKeyPath)
 			if err != nil {
 				return fmt.Errorf("failed to create SSH connection to %s: %w", instance.Name, err)
 			}
@@ -363,10 +365,15 @@ func installKubeadmOnInstances(ctx context.Context, subscriptionID, cluster, vms
 func Create(args CreatePoolArgs) error {
 	subscriptionID := args.SubscriptionID
 	cluster := args.Cluster
-	location := args.Location
+	location := args.Region
 	role := args.Role
 	if role != "" && role != "control-plane" && role != "worker" {
 		return fmt.Errorf("invalid role: %s (must be 'control-plane' or 'worker')", role)
+	}
+
+	// Validate hypervisor generation
+	if args.HyperVGeneration != "" && args.HyperVGeneration != "gen1" && args.HyperVGeneration != "gen2" {
+		return fmt.Errorf("invalid hyperv-generation: %s (must be 'gen1' or 'gen2')", args.HyperVGeneration)
 	}
 
 	cred, err := azidentity.NewDefaultAzureCredential(nil)
@@ -469,21 +476,36 @@ func Create(args CreatePoolArgs) error {
 	// Prepare VMSS parameters
 	var backendPools []*armcompute.SubResource
 	var inboundNatPools []*armcompute.SubResource
-	lbName := fmt.Sprintf("k3alb%s", clusterHash)
-	backendPools, inboundNatPools, err = getLoadBalancerPools(ctx, subscriptionID, cluster, lbName, args.Name, cred)
-	if err != nil {
-		return err
-	}
 
-	if !isControlPlane {
-		inboundNatPools = nil
+	// Only control plane nodes need load balancer connectivity
+	if isControlPlane {
+		lbName := fmt.Sprintf("k3alb%s", clusterHash)
+		backendPools, inboundNatPools, err = getLoadBalancerPools(ctx, subscriptionID, cluster, lbName, args.Name, cred)
+		if err != nil {
+			return err
+		}
+	}
+	// Worker nodes will use NAT Gateway for outbound connectivity (no load balancer pools needed)
+
+	// Determine the appropriate OS image SKU based on hypervisor generation
+	// Gen1: Compatible with older VM SKUs (Dv2, Dv3, etc.)
+	// Gen2: Better performance, supports newer VM SKUs (Dv4, Dv5, Ev4, Ev5, etc.)
+	var imageSKU string
+	switch args.HyperVGeneration {
+	case "gen1":
+		imageSKU = "cbl-mariner-2"
+	case "gen2":
+		imageSKU = "cbl-mariner-2-gen2"
+	default:
+		// Default to gen2 for better performance and features
+		imageSKU = "cbl-mariner-2-gen2"
 	}
 
 	storageProfile := &armcompute.VirtualMachineScaleSetStorageProfile{
 		ImageReference: &armcompute.ImageReference{
 			Publisher: to.Ptr("MicrosoftCblMariner"),
 			Offer:     to.Ptr("Cbl-Mariner"),
-			SKU:       to.Ptr("cbl-mariner-2-gen2"),
+			SKU:       to.Ptr(imageSKU),
 			Version:   to.Ptr("latest"),
 		},
 		OSDisk: &armcompute.VirtualMachineScaleSetOSDisk{
@@ -503,15 +525,22 @@ func Create(args CreatePoolArgs) error {
 			Capacity: to.Ptr[int64](int64(instanceCount)),
 		},
 		Tags: map[string]*string{
-			"k3a": to.Ptr(role),
+			"k3a":                                  to.Ptr(role),
+			"SkipTrustedLaunchEnforcement":         to.Ptr("true"), // Bypass Trusted Launch enforcement
+			"SkipVmssAutomaticOSUpdateEnforcement": to.Ptr("true"), // Bypass automatic OS updates
 		},
 		Identity: &armcompute.VirtualMachineScaleSetIdentity{
 			Type:                   to.Ptr(armcompute.ResourceIdentityTypeUserAssigned),
 			UserAssignedIdentities: userAssignedIdentities,
 		},
 		Properties: &armcompute.VirtualMachineScaleSetProperties{
+			// IMPORTANT: SinglePlacementGroup must be disabled to scale beyond 100 instances (allows up to 1000 in Uniform mode)
+			// We set this when desired capacity is > 100. It is safe for smaller counts as well.
+			SinglePlacementGroup: to.Ptr(false),
+			// OrchestrationMode:        to.Ptr(armcompute.OrchestrationModeFlexible), //TODO(rbtr) large worker VMSS requires flexible
+			// PlatformFaultDomainCount: to.Ptr[int32](1),
 			UpgradePolicy: &armcompute.UpgradePolicy{
-				Mode: to.Ptr(armcompute.UpgradeModeManual),
+				Mode: to.Ptr(armcompute.UpgradeModeAutomatic),
 			},
 			VirtualMachineProfile: &armcompute.VirtualMachineScaleSetVMProfile{
 				OSProfile: &armcompute.VirtualMachineScaleSetOSProfile{
@@ -532,6 +561,7 @@ func Create(args CreatePoolArgs) error {
 				},
 				StorageProfile: storageProfile,
 				NetworkProfile: &armcompute.VirtualMachineScaleSetNetworkProfile{
+					// NetworkAPIVersion: to.Ptr(armcompute.NetworkAPIVersionTwoThousandTwenty1101), //TODO(rbtr) required for flexible orchestration mode
 					NetworkInterfaceConfigurations: []*armcompute.VirtualMachineScaleSetNetworkConfiguration{
 						{
 							Name: to.Ptr(args.Name + "-nic"),
@@ -567,6 +597,7 @@ func Create(args CreatePoolArgs) error {
 	}
 
 	if args.Role == "control-plane" {
+		lbName := fmt.Sprintf("k3alb%s", clusterHash)
 		if err := rule.Create(rule.CreateRuleArgs{
 			SubscriptionID: subscriptionID,
 			ResourceGroup:  cluster,
@@ -582,7 +613,7 @@ func Create(args CreatePoolArgs) error {
 	fmt.Printf("VMSS deployment succeeded: %v\n", *resp.ID)
 
 	// Install kubeadm on the newly created instances
-	if err := installKubeadmOnInstances(ctx, subscriptionID, cluster, args.Name+"-vmss", args.Role, args.InstanceCount, cred); err != nil {
+	if err := installKubeadmOnInstances(ctx, subscriptionID, args.Region, cluster, args.EtcdAddr, args.Name+"-vmss", args.Role, args.InstanceCount, args.SSHKeyPath, cred); err != nil {
 		return fmt.Errorf("kubeadm installation failed: %w", err)
 	}
 
