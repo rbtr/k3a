@@ -297,18 +297,18 @@ func Create(args CreateArgs) error {
 	// KeyVault is still needed for kubeconfig storage in cloud-init template
 	_ = keyVaultName // Used by pool creation for kubeconfig storage
 
-	// Create Network Security Group (NSG)
-	nsgName := vnetNamePrefix + "-nsg"
-	nsgID, err := createNetworkSecurityGroup(ctx, subscriptionID, cluster, location, nsgName, cred)
-	if err != nil {
-		return err
-	}
+	// // Create Network Security Group (NSG)
+	// nsgName := vnetNamePrefix + "-nsg"
+	// nsgID, err := createNetworkSecurityGroup(ctx, subscriptionID, cluster, location, nsgName, cred)
+	// if err != nil {
+	// 	return err
+	// }
 
-	// Create Virtual Network (VNet) with subnets
-	vnetName := vnetNamePrefix + "-vnet"
-	if err := createVirtualNetwork(ctx, subscriptionID, cluster, location, vnetName, args.VnetAddressSpace, nsgID, cred); err != nil {
-		return err
-	}
+	// // Create Virtual Network (VNet) with subnets
+	// vnetName := vnetNamePrefix + "-vnet"
+	// if err := createVirtualNetwork(ctx, subscriptionID, cluster, location, vnetName, args.VnetAddressSpace, nsgID, cred); err != nil {
+	// 	return err
+	// }
 
 	// Create Storage Account
 	storageName := strings.ToLower(vnetNamePrefix + "storage" + kstrings.UniqueString(cluster))

@@ -4,7 +4,7 @@ echo $K3A_CLUSTER
 echo $K3A_SUBSCRIPTION
 go build -o k3a ./cmd/k3a && echo "Build successful"
 # Create cluster infrastructure with integrated PostgreSQL Flexible Server
-./k3a cluster create --cluster $K3A_CLUSTER --subscription $K3A_SUBSCRIPTION --region canadacentral --postgres-sku Standard_D64s_v3
+./k3a cluster create --cluster $K3A_CLUSTER --subscription $K3A_SUBSCRIPTION --region $K3A_REGION --postgres-sku Standard_D64s_v3
 ./k3a pool create --cluster $K3A_CLUSTER --name k3a-controlplane --instance-count 1 --subscription $K3A_SUBSCRIPTION --role control-plane --sku Standard_D96s_v5 
 ./k3a pool create --cluster $K3A_CLUSTER --name k3a-worker-0 --role worker --sku Standard_D16s_v3 --instance-count 1
 ./k3a nsg rule create --source CorpNetPublic --name AllowCorpNetPublic --priority 150  --subscription $K3A_SUBSCRIPTION --cluster $K3A_CLUSTER
@@ -12,6 +12,13 @@ go build -o k3a ./cmd/k3a && echo "Build successful"
 cilium install --set=ipam.operator.clusterPoolIPv4PodCIDRList="10.42.0.0/16"  --chart-directory=$HOME/src/github.com/cilium/cilium/install/kubernetes/cilium --helm-values=$HOME/src/github.com/cilium/cilium/contrib/testing/kind-common.yaml --version=
 # kubectl get nodes -o name | grep "k3s-agent-" | xargs -I {} kubectl label {} node-role.kubernetes.io/worker=worker --overwrite
 
+
+
+---
+etcd
+./k3a pool create --cluster k3s-canadacentral-vapa-dp4 --name k3s-master-1 --instance-count 1 --subscription 110efc33-11a4-46b9-9986-60716283fbe7 --role control-plane  --sku Standard_D96s_v5
+./k3a pool create --cluster $K3A_CLUSTER --name k3a-controlplane --instance-count 1 --subscription $K3A_SUBSCRIPTION --role control-plane --sku Standard_D96s_v5  --etcd-endpoint "http://10.0.0.4:2379"
+./k3a pool create --cluster $K3A_CLUSTER --name k3a-worker-0 --role worker --sku Standard_D2_v3 --instance-count 1 --storage-type StandardSSD_LRS --use-postgres=false --etcd-endpoint "http://10.0.0.4:2379"
 
 # # Create control plane using PostgreSQL as datastore (auto-detects PostgreSQL server name)
 # ./k3a pool create --cluster k3s-canadacentral-vapa-dp4 --instance-count 100 --subscription 110efc33-11a4-46b9-9986-60716283fbe7 --role worker --etcd-endpoint "http://4.206.93.140:2379"  --sku Standard_D16s_v3 --name k3s-agent-10

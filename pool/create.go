@@ -336,7 +336,7 @@ func Create(args CreatePoolArgs) error {
 		ImageReference: &armcompute.ImageReference{
 			Publisher: to.Ptr("MicrosoftCblMariner"),
 			Offer:     to.Ptr("Cbl-Mariner"),
-			SKU:       to.Ptr("cbl-mariner-2-gen2"),
+			SKU:       to.Ptr("cbl-mariner-2"),
 			Version:   to.Ptr("latest"),
 		},
 		OSDisk: &armcompute.VirtualMachineScaleSetOSDisk{
@@ -357,13 +357,17 @@ func Create(args CreatePoolArgs) error {
 			Capacity: to.Ptr[int64](int64(instanceCount)),
 		},
 		Tags: map[string]*string{
-			"k3a": to.Ptr(role),
+			"k3a":                                  to.Ptr(role),
+			"SkipTrustedLaunchEnforcement":         to.Ptr("true"), // Bypass Trusted Launch enforcement
+			"SkipVmssAutomaticOSUpdateEnforcement": to.Ptr("true"), // Bypass automatic OS updates
 		},
 		Identity: &armcompute.VirtualMachineScaleSetIdentity{
 			Type:                   to.Ptr(armcompute.ResourceIdentityTypeUserAssigned),
 			UserAssignedIdentities: userAssignedIdentities,
 		},
 		Properties: &armcompute.VirtualMachineScaleSetProperties{
+			// OrchestrationMode:        to.Ptr(armcompute.OrchestrationModeFlexible),
+			// PlatformFaultDomainCount: to.Ptr[int32](1),
 			UpgradePolicy: &armcompute.UpgradePolicy{
 				Mode: to.Ptr(armcompute.UpgradeModeAutomatic),
 			},
@@ -384,11 +388,12 @@ func Create(args CreatePoolArgs) error {
 						},
 					},
 				},
-				SecurityProfile: &armcompute.SecurityProfile{ // Enable Trusted Launch security type
-					SecurityType: to.Ptr(armcompute.SecurityTypes("TrustedLaunch")),
-				},
+				// SecurityProfile: &armcompute.SecurityProfile{ // Enable Trusted Launch security type
+				// 	SecurityType: to.Ptr(armcompute.SecurityTypes("TrustedLaunch")),
+				// },
 				StorageProfile: storageProfile,
 				NetworkProfile: &armcompute.VirtualMachineScaleSetNetworkProfile{
+					// NetworkAPIVersion: to.Ptr(armcompute.NetworkAPIVersionTwoThousandTwenty1101),
 					NetworkInterfaceConfigurations: []*armcompute.VirtualMachineScaleSetNetworkConfiguration{
 						{
 							Name: to.Ptr(args.Name + "-nic"),

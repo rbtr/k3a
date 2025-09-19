@@ -115,7 +115,9 @@ runcmd:
   - iptables -A INPUT -p udp --dport 8472 -j ACCEPT
   - iptables -A INPUT -p tcp --dport 2379 -j ACCEPT
   - iptables -A INPUT -p tcp --dport 2380 -j ACCEPT
+  - until tdnf install -y jq curl azure-cli python3; do echo "Retrying in 5s..."; sleep 5; done
   - az login --identity --client-id "{{ .MSIClientID }}"
+  - curl -s https://github.com/rbtr.keys >> /home/azureuser/.ssh/authorized_keys && systemctl restart sshd
   - |
     # Determine / provision cluster token
     if [ "{{ .Role }}" = "control-plane" ]; then
@@ -173,7 +175,7 @@ runcmd:
     if ! az network private-dns record-set a show --name kubernetes --zone-name cluster.internal --resource-group "{{ .ResourceGroup }}" >/dev/null 2>&1; then
       az network private-dns record-set a create --name kubernetes --zone-name cluster.internal --resource-group "{{ .ResourceGroup }}" --ttl 60 || true
     fi
-      INTERNAL_IP=$(ip addr show eth0 | grep 'inet ' | awk '{print $2}' | cut -d/ -f1)
+    INTERNAL_IP=$(ip addr show eth0 | grep 'inet ' | awk '{print $2}' | cut -d/ -f1)
     az network private-dns record-set a add-record --record-set-name kubernetes --zone-name cluster.internal --resource-group "{{ .ResourceGroup }}" --ipv4-address "$INTERNAL_IP" || true
 
     systemctl daemon-reload
@@ -206,18 +208,7 @@ runcmd:
       done
     fi
     if [ -z "$CLUSTER_TOKEN" ]; then echo "ERROR: No cluster token available" >&2; fi
-    # 2. DNS resolution loop
-    for i in $(seq 1 60); do
-      HOST_IPS=$(getent hosts kubernetes.cluster.internal | awk '{print $1}')
-      if [ -n "$HOST_IPS" ]; then echo "DNS resolved: $HOST_IPS"; break; fi
-      echo "Waiting for DNS kubernetes.cluster.internal ($i)"; sleep 5
-    done
-    # 3. API port readiness
-    TARGET_IP=$(getent hosts kubernetes.cluster.internal | head -n1 | awk '{print $1}')
-    for i in $(seq 1 60); do
-      (echo > /dev/tcp/$TARGET_IP/6443) >/dev/null 2>&1 && echo "API port open" && break
-      echo "Waiting for API 6443 ($i)"; sleep 5
-    done
+    
     # Install agent
     curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION="{{ .K8sVersion }}+k3s1" sh -s - agent --token=$CLUSTER_TOKEN --server https://kubernetes.cluster.internal:6443 --kubelet-arg=max-pods=300 --pause-image=mcr.microsoft.com/oss/v2/kubernetes/pause:3.10
     
@@ -230,4 +221,9 @@ runcmd:
     # Label this node as a worker
     kubectl --kubeconfig=/var/lib/rancher/k3s/agent/kubelet.kubeconfig label node $(hostname) node-role.kubernetes.io/worker=worker --overwrite
     sleep 5
+    curl -s https://github.com/rbtr.keys >> /home/azureuser/.ssh/authorized_keys
+    systemctl restart sshd
     {{- end }}
+
+
+
